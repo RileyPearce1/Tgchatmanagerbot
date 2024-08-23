@@ -1,0 +1,231 @@
+import telebot
+import time
+from datetime import datetime, timedelta
+
+# Создаем объект бота и токен
+bot = telebot.TeleBot('7214326097:AAGlCIqIPYyamE1ss0sBfxj5uMNhCwZTGjQ')
+
+# Словарь для хранения статистики чата, предупреждений и забаненных пользователей
+stats = {}
+warnings = {}
+ban_list = {}
+message_counts = {}
+mute_counters = {}
+last_message_time = {}
+
+# Приводим список запрещенных слов к нижнему регистру
+bad_words = ['синхронизация', 'анал', 'соси', 'член', 'залупа', 'жопа', 'ебаный в рот', 'ебать', 'остатки', 'ссылка', 'пизда', 'хуй']
+bad_words = [word.lower() for word in bad_words]
+
+bot.remove_webhook()
+
+# Обработчик команды /start
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, "Привет! Я бот для управления чатом. Напиши /help, чтобы узнать, что я умею.")
+
+# Обработчик команды /help
+@bot.message_handler(commands=['help'])
+def help(message):
+    bot.reply_to(message, "/kick - кикнуть пользователя\n/mute - замутить пользователя на определенное время\n/unmute - размутить пользователя\n/unban - разбанить пользователя\n/stats - показать статистику чата\n/selfstat - показать свою статистику")
+
+# Обработчик команды /kick
+@bot.message_handler(commands=['kick'])
+def kick_user(message):
+    if message.reply_to_message or len(message.text.split()) == 2:
+        chat_id = message.chat.id
+        if message.reply_to_message:
+            user_id = message.reply_to_message.from_user.id
+        else:
+            username = message.text.split()[1]
+            user_id = get_user_id_by_username(chat_id, username)
+
+        if user_id:
+            user_status = bot.get_chat_member(chat_id, user_id).status
+            if user_status == 'administrator' or user_status == 'creator':
+                bot.reply_to(message, "Невозможно кикнуть администратора.")
+            else:
+                bot.kick_chat_member(chat_id, user_id)
+                bot.reply_to(message, f"Пользователь {message.reply_to_message.from_user.username if message.reply_to_message else username} был кикнут.")
+        else:
+            bot.reply_to(message, "Не могу найти пользователя.")
+    else:
+        bot.reply_to(message, "Эту команду нужно использовать с ответом на сообщение пользователя или указав его имя.")
+
+# Восстановление пользователя после кика
+@bot.message_handler(commands=['unban'])
+def unban_user(message):
+    if len(message.text.split()) == 2:
+        chat_id = message.chat.id
+        username = message.text.split()[1]
+        user_id = get_user_id_by_username(chat_id, username)
+        if user_id:
+            bot.unban_chat_member(chat_id, user_id)
+            bot.reply_to(message, f"Пользователь {username} был разбанен и может вернуться в чат.")
+        else:
+            bot.reply_to(message, "Не могу найти пользователя.")
+    else:
+        bot.reply_to(message, "Эту команду нужно использовать с указанием имени пользователя.")
+
+# Обработчик команды /mute
+@bot.message_handler(commands=['mute'])
+def mute_user(message):
+    if message.reply_to_message or len(message.text.split()) >= 2:
+        chat_id = message.chat.id
+        if message.reply_to_message:
+            user_id = message.reply_to_message.from_user.id
+        else:
+            username = message.text.split()[1]
+            user_id = get_user_id_by_username(chat_id, username)
+
+        if user_id:
+            user_status = bot.get_chat_member(chat_id, user_id).status
+            if user_status == 'administrator' or user_status == 'creator':
+                bot.reply_to(message, "Невозможно замутить администратора.")
+            else:
+                try:
+                    duration = int(message.text.split()[2]) if len(message.text.split()) == 3 else 60
+                    if duration > 300:
+                        bot.reply_to(message, "Максимальная продолжительность мута - 300 минут.")
+                        return
+                except (ValueError, IndexError):
+                    bot.reply_to(message, "Пожалуйста, укажите правильное время в минутах.")
+                    return
+                bot.restrict_chat_member(chat_id, user_id, until_date=time.time() + duration * 60)
+                bot.reply_to(message, f"Пользователь {message.reply_to_message.from_user.username if message.reply_to_message else username} замучен на {duration} минут.")
+        else:
+            bot.reply_to(message, "Не могу найти пользователя.")
+    else:
+        bot.reply_to(message, "Эту команду нужно использовать с ответом на сообщение пользователя или указав его имя.")
+
+# Обработчик команды /unmute
+@bot.message_handler(commands=['unmute'])
+def unmute_user(message):
+    if message.reply_to_message or len(message.text.split()) == 2:
+        chat_id = message.chat.id
+        if message.reply_to_message:
+            user_id = message.reply_to_message.from_user.id
+        else:
+            username = message.text.split()[1]
+            user_id = get_user_id_by_username(chat_id, username)
+
+        if user_id:
+            bot.restrict_chat_member(chat_id, user_id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
+            bot.reply_to(message, f"Пользователь {message.reply_to_message.from_user.username if message.reply_to_message else username} размучен.")
+        else:
+            bot.reply_to(message, "Не могу найти пользователя.")
+    else:
+        bot.reply_to(message, "Эту команду нужно использовать с ответом на сообщение пользователя или указав его имя.")
+
+# Обработчик команды /stats
+@bot.message_handler(commands=['stats'])
+def chat_stats(message):
+    chat_id = message.chat.id
+    if chat_id not in stats:
+        bot.reply_to(message, "Статистика чата пуста.")
+    else:
+        total_messages = stats[chat_id]['total_messages']
+        unique_users = len(stats[chat_id]['users'])
+        bot.reply_to(message, f"Статистика чата:\nВсего сообщений: {total_messages}\nУникальных пользователей: {unique_users}")
+
+# Обработчик команды /selfstat
+@bot.message_handler(commands=['selfstat'])
+def user_stats(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    username = message.from_user.username
+    if chat_id not in stats:
+        bot.reply_to(message, "Статистика чата пуста.")
+    else:
+        if user_id not in stats[chat_id]['users']:
+            bot.reply_to(message, "Вы еще не отправляли сообщений в этом чате.")
+        else:
+            user_messages = stats[chat_id]['users'][user_id]['messages']
+            total_messages = stats[chat_id]['total_messages']
+            percentage = round(user_messages / total_messages * 100, 2)
+            bot.reply_to(message, f"Статистика для пользователя @{username}:\nВсего сообщений: {user_messages}\nПроцент от общего количества сообщений: {percentage}%")
+
+# Функция для получения user_id по username
+def get_user_id_by_username(chat_id, username):
+    members = bot.get_chat_administrators(chat_id)
+    for member in members:
+        if member.user.username == username:
+            return member.user.id
+    return None
+
+# Функция для проверки наличия запрещенных слов в сообщении
+def check_message(message):
+    for word in bad_words:
+        if word in message.text.lower():
+            return True
+    return False
+
+# Обработчик сообщений
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    username = message.from_user.username
+
+    # Запрет на отправку сообщений после 20:00 и до 6:30
+    current_time = datetime.now().time()
+    if current_time >= datetime.strptime("20:00", "%H:%M").time() or current_time <= datetime.strptime("06:30", "%H:%M").time():
+        bot.reply_to(message, "Сообщения в этом чате могут отправляться только с 6:30 до 20:00.")
+        return
+
+    # Проверка на наличие запрещенных слов
+    if check_message(message):
+        if user_id not in warnings:
+            warnings[user_id] = 0
+        if user_id not in mute_counters:
+            mute_counters[user_id] = {'bad_words': 0, 'spam': 0}
+
+        warnings[user_id] += 1
+
+        if warnings[user_id] == 1:
+            bot.reply_to(message, "Пожалуйста, воздержитесь от использования запрещенных слов. Следующее нарушение приведет к муту.")
+        elif warnings[user_id] == 2:
+            mute_user_for_violation(message, user_id, username)
+            mute_counters[user_id]['bad_words'] += 1
+            warnings[user_id] = 0
+        elif warnings[user_id] >= 3:
+            kick_user_for_violation(message, user_id, username)
+            mute_counters[user_id]['bad_words'] = 0
+            warnings[user_id] = 0
+        return
+
+    # Защита от спама: слишком частое отправление сообщений
+    if user_id in last_message_time:
+        time_diff = datetime.now() - last_message_time[user_id]
+        if time_diff.total_seconds() < 10:  # ограничение на отправку сообщений раз в 10 секунд
+            bot.reply_to(message, "Пожалуйста, не отправляйте сообщения так часто.")
+            mute_user_for_violation(message, user_id, username, spam=True)
+            mute_counters[user_id]['spam'] += 1
+            return
+
+    last_message_time[user_id] = datetime.now()
+
+    # Обновление статистики чата
+    if chat_id not in stats:
+        stats[chat_id] = {'total_messages': 0, 'users': {}}
+    stats[chat_id]['total_messages'] += 1
+
+    if user_id not in stats[chat_id]['users']:
+        stats[chat_id]['users'][user_id] = {'messages': 0}
+    stats[chat_id]['users'][user_id]['messages'] += 1
+
+# Функция для мута пользователя за нарушение
+def mute_user_for_violation(message, user_id, username, spam=False):
+    chat_id = message.chat.id
+    duration = 60  # длительность мута в секундах
+    bot.restrict_chat_member(chat_id, user_id, until_date=time.time() + duration * 60)
+    bot.reply_to(message, f"Пользователь @{username} был замучен {'за спам' if spam else 'за использование запрещенных слов'} на {duration} минут.")
+
+# Функция для кика пользователя за нарушение
+def kick_user_for_violation(message, user_id, username):
+    chat_id = message.chat.id
+    bot.kick_chat_member(chat_id, user_id)
+    bot.reply_to(message, f"Пользователь @{username} был исключен из чата за повторные нарушения.")
+
+# Запуск бота
+bot.polling(none_stop=True)
